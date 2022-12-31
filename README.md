@@ -1,5 +1,5 @@
 # Sudoku Solver
-Mama, there goes that man...
+Look at that boy go!
 
 ![sudoku_solver_solving](images/sudoku_solver.gif)
 
