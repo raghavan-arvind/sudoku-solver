@@ -28,8 +28,20 @@ type Square struct {
 }
 
 type Coordinate struct {
-	row int
-	col int
+	Row int
+	Col int
+}
+
+func coordinatesEqual(c1, c2 *Coordinate) bool {
+	if c1 == nil && c2 == nil {
+		return true
+	}
+
+	if c1 == nil || c2 == nil {
+		return false
+	}
+
+	return *c1 == *c2
 }
 
 // Game implements ebiten.Game interface.
@@ -47,25 +59,18 @@ type Game struct {
 	conflicts map[Coordinate]bool
 	gameWon   bool
 
-	cursorRow int
-	cursorCol int
-
-	selectedRow int
-	selectedCol int
+	cursor   *Coordinate
+	selected *Coordinate
 
 	initDone bool
 	redraw   bool
+
+	lastAlgMove int
 }
 
 func NewGame() *Game {
 	g := Game{}
 	g.initBoard()
-
-	g.cursorRow = -1
-	g.cursorCol = -1
-
-	g.selectedRow = -1
-	g.selectedCol = -1
 
 	g.width = Width
 	g.height = Height
@@ -102,12 +107,12 @@ var numKeys = map[ebiten.Key]byte{
 	ebiten.KeyBackspace: ' ',
 }
 
-func (g *Game) canEdit(row, col int) bool {
-	if row == -1 || col == -1 {
+func (g *Game) canEdit(c *Coordinate) bool {
+	if c == nil {
 		return false
 	}
 
-	return !g.board[row][col].isFixed
+	return !g.board[c.Row][c.Col].isFixed
 }
 
 func (g *Game) boardFilled() bool {
@@ -188,46 +193,44 @@ func (g *Game) findConflicts() map[Coordinate]bool {
 // Update proceeds the game state.
 // Update is called every tick (1/60 [s] by default).
 func (g *Game) Update() error {
-	newCursorRow, newCursorCol := g.getCursorRowCol()
-	if newCursorRow != g.cursorRow || newCursorCol != g.cursorCol {
+	newCursor := g.getCursor()
+	if !coordinatesEqual(g.cursor, newCursor) {
 		g.redraw = true
-
-		g.cursorRow = newCursorRow
-		g.cursorCol = newCursorCol
-
-		if !g.canEdit(g.cursorRow, g.cursorCol) {
-			g.cursorRow = -1
-			g.cursorCol = -1
-		}
+		g.cursor = newCursor
 	}
 
 	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
-		if g.cursorRow != -1 && g.cursorCol != -1 {
-			g.selectedRow = g.cursorRow
-			g.selectedCol = g.cursorCol
-		} else {
-			g.selectedRow = -1
-			g.selectedCol = -1
-		}
 		g.redraw = true
+		if g.cursor != nil {
+			g.selected = g.cursor
+		} else {
+			g.selected = nil
+		}
 	}
 
-	// boardChanged := false
+	boardChanged := false
 	for key, char := range numKeys {
-		if inpututil.IsKeyJustPressed(key) {
-			if g.selectedRow != -1 && g.selectedCol != -1 {
-				g.board[g.selectedRow][g.selectedCol].value = char
-				g.selectedRow = -1
-				g.selectedCol = -1
-				// boardChanged = true
-			}
+		if inpututil.IsKeyJustPressed(key) && g.selected != nil {
 			g.redraw = true
+
+			g.board[g.selected.Row][g.selected.Col].value = char
+			g.selected = nil
+
+			boardChanged = true
 			break
 		}
 	}
 
-	g.conflicts = g.findConflicts()
-	g.gameWon = len(g.conflicts) == 0 && g.boardFilled()
+	if numMoves > g.lastAlgMove {
+		g.redraw = true
+		boardChanged = true
+		g.lastAlgMove = numMoves
+	}
+
+	if boardChanged {
+		g.conflicts = g.findConflicts()
+		g.gameWon = len(g.conflicts) == 0 && g.boardFilled()
+	}
 
 	return nil
 }
@@ -304,7 +307,7 @@ func (g *Game) setPixel(row, col int, c color.Color) {
 	g.pixels[pixelIndex+3] = byte(a)
 }
 
-func (g *Game) getCursorRowCol() (int, int) {
+func (g *Game) getCursor() *Coordinate {
 	x, y := ebiten.CursorPosition()
 	inRow := -1
 	inCol := -1
@@ -324,12 +327,18 @@ func (g *Game) getCursorRowCol() (int, int) {
 		}
 	}
 
-	return inRow, inCol
-}
+	if inRow == -1 || inCol == -1 {
+		return nil
+	}
 
-func (g *Game) cursorInRowCol(targetRow, targetCol int) bool {
-	row, col := g.getCursorRowCol()
-	return row == targetRow && col == targetCol
+	cursor := &Coordinate{
+		Row: inRow,
+		Col: inCol,
+	}
+	if !g.canEdit(cursor) {
+		return nil
+	}
+	return cursor
 }
 
 func (g *Game) redrawBoard(screen *ebiten.Image) {
@@ -354,11 +363,11 @@ func (g *Game) redrawBoard(screen *ebiten.Image) {
 				boxColor = palette.WebSafe[200]
 			}
 
-			if row == g.cursorRow && col == g.cursorCol {
+			if g.cursor != nil && row == g.cursor.Row && col == g.cursor.Col {
 				boxColor = palette.WebSafe[100]
 			}
 
-			if row == g.selectedRow && col == g.selectedCol {
+			if g.selected != nil && row == g.selected.Row && col == g.selected.Col {
 				boxColor = palette.WebSafe[50]
 			}
 
@@ -413,9 +422,10 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	if g.redraw {
 		g.redrawBoard(screen)
 		g.redraw = false
+	} else {
+		screen.WritePixels(g.pixels)
 	}
 
-	screen.WritePixels(g.pixels)
 	// duration := time.Since(start)
 	// fmt.Printf("took: %v ms, fps: %v\n", duration.Milliseconds(), ebiten.ActualFPS())
 }
@@ -499,7 +509,7 @@ func (g *Game) smartyPants() {
 
 				if len(zeroConflictChoices) == 1 {
 					coord := zeroConflictChoices[0]
-					g.board[coord.row][coord.col].value = b
+					g.board[coord.Row][coord.Col].value = b
 				}
 			}
 		}
